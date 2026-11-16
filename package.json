@@ -1,0 +1,1 @@
+{"name":"vs-japan","version":"2.0.0","private":true,"type":"module","scripts":{"test":"node --check app.js && node --check api/indicators.js"}}

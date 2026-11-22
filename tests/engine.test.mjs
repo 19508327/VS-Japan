@@ -19,7 +19,7 @@ test("month calculations handle year boundaries",()=>{
 test("missing denominators cannot produce an invented 0",()=>{
  assert.equal(percentChange(5,null),null);
  assert.equal(percentChange(5,0),null);
- assert.equal(percentChange(120,100),20);
+ assert.ok(Math.abs(percentChange(120,100)-20)<1e-10);
 });
 test("FX compares currency units per USD, not absolute currency price",()=>{
  assert.ok(monthlyGrowth(mini,"fx","CHN",2025,12).value>7);

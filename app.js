@@ -1,1 +1,84 @@
-const $=id=>document.getElementById(id);const ids=[['gdp','实际GDP增长','wdi'],['inflation','通胀','wdi'],['youth','青年失业率','wdi'],['rate','实际贷款利率','wdi'],['nikkei','日经225年收益','fred'],['shanghai','上证综指年收益','fred'],['jpy','日元兑美元','fred'],['cny','人民币兑美元','fred']];let cache={};const series=(id,c)=>cache[id]?.data?.find(x=>x.country===c)?.series||[];const v=(s,y)=>s.find(x=>x.year===y)?.value;const pct=(s,y)=>{let a=v(s,y),b=v(s,y-1);return Number.isFinite(a)&&Number.isFinite(b)&&b>0?100*(a/b-1):null};function snapshot(y,c){return{gdp:v(series('gdp',c),y),inflation:v(series('inflation',c),y),jobs:v(series('youth',c),y),rates:v(series('rate',c),y),stock:v(series(c==='CHN'?'shanghai':'nikkei',c),y),fx:pct(series(c==='CHN'?'cny':'jpy',c),y)}}function analyze(){const y=+$('year').value,cn=snapshot(y,'CHN'),type=$('metric').value,keys=type==='all'?['stock','fx','rates','inflation','jobs','gdp']:type==='rates'?['rates','inflation']:[type],scales={stock:25,fx:10,rates:4,inflation:5,jobs:8,gdp:5};let scores=[];for(let j=1990;j<=2025;j++){let jp=snapshot(j,'JPN'),pairs=keys.filter(k=>Number.isFinite(cn[k])&&Number.isFinite(jp[k]));if(pairs.length>=Math.min(keys.length,3))scores.push({year:j,n:pairs.length,score:pairs.reduce((a,k)=>a+Math.min(3,Math.abs(cn[k]-jp[k])/scales[k]),0)/pairs.length})}scores.sort((a,b)=>a.score-b.score);$('data').replaceChildren();for(let k of keys){let d=document.createElement('div');d.className='data';let l=document.createElement('span');l.textContent=({stock:'股票年收益',fx:'美元汇率年变动',rates:'实际贷款利率',inflation:'CPI通胀',jobs:'青年失业率',gdp:'实际GDP增长'})[k];let b=document.createElement('b');b.textContent=Number.isFinite(cn[k])?cn[k].toFixed(1)+'%':'缺失';d.append(l,b);$('data').append(d)}$('match').textContent=scores[0]?'日本 '+scores[0].year+' 年附近':'共同数据不足';$('summary').textContent=scores[0]?'匹配基于 '+scores[0].n+' 项指标的标准化距离。结构差异与数据缺失可能改变结果。':'没有足够数据，不强行生成匹配。';$('sources').replaceChildren();for(let x of Object.values(cache)){let a=document.createElement('a');a.href=x.source;a.textContent=x.code;a.target='_blank';a.rel='noopener';$('sources').append(a)}$('status').textContent='数据源成功 '+Object.keys(cache).length+'/'+ids.length+' · '+new Date().toLocaleString('zh-CN')}for(let y=2026;y>=1990;y--){let o=document.createElement('option');o.value=y;o.textContent=y+' 年';$('year').append(o)}$('year').value='2025';$('run').onclick=async()=>{let b=$('run');b.disabled=true;b.textContent='查询中…';await Promise.allSettled(ids.map(async([id,,type])=>{try{let r=await fetch('/api/indicators?type='+type+'&id='+id);if(r.ok)cache[id]=await r.json()}catch(e){console.warn(id,e)}}));analyze();b.disabled=false;b.textContent='重新分析'};$('copy').onclick=async()=>{const q='比较中国当前与日本历史的股市收益率、美元汇率、利率、青年就业，引用公开来源并说明不可比之处。';try{await navigator.clipboard.writeText(q);$('copy').textContent='已复制，粘贴到 ChatGPT'}catch{prompt('复制问题',q)}};if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
+import {rankJapan,snapshot,WEIGHTS,LENSES,monthStreak} from "./engine.mjs";
+const $=id=>document.getElementById(id);
+const metricIds=["stock","fx","rate","youth","money","inflation","gdp"];
+const names={stock:"股票价格趋势",fx:"美元汇率",rate:"贷款利率",youth:"青年失业率",money:"广义货币增长",inflation:"通胀",gdp:"GDP增长"};
+const state={data:{},error:{},loading:false,latest:null};
+const fmt=(n,suffix="%")=>Number.isFinite(n)?n.toFixed(1)+suffix:"—";
+const available=key=>Boolean(state.data[key]?.data?.some(row=>row.series?.length));
+const pill=(text,bad=false)=>`<span class="tag ${bad?"bad":""}">${text}</span>`;
+function updateStatus(){
+ const successful=metricIds.filter(available).length;
+ $("sourceStatus").textContent=`已读取 ${successful}/${metricIds.length} 组公开指标 · 部分月度/年度数据存在发布滞后`;
+ const wrap=$("sourceItems");wrap.replaceChildren();
+ for(const id of metricIds) {
+  const obj=state.data[id],el=document.createElement("div");el.className="source-row";
+  const a=document.createElement("a");a.href=obj?.source||({stock:"https://fred.stlouisfed.org/",fx:"https://fred.stlouisfed.org/"}[id]||"https://data.worldbank.org/");a.target="_blank";a.rel="noopener noreferrer";
+  a.textContent=names[id]+" ↗";
+  const c=document.createElement("span");c.textContent=obj?.data?.map(x=>x.country+": "+(x.last||"无记录")).join(" · ")||"尚未取得";
+  el.append(a,c);wrap.append(el);
+ }
+}
+function render(){
+ const y=Number($("year").value),month=Number($("month").value),lens=$("lens").value;
+ const result=rankJapan(state.data,y,lens,month);state.latest=result;
+ const cn=result.china,top=result.ranked[0];
+ const box=$("result"),sub=$("resultSub"),comp=$("comparison");
+ box.textContent=top?`日本 ${top.year} 年附近`:"暂无法可靠匹配";
+ sub.textContent=top?`基于 ${top.available.length} 项可比指标 · 有效覆盖权重 ${Math.round(top.coverage*100)}% · 历史候选 ${result.candidateCount} 年`:
+ "缺少关键指标的中日同期历史数据。请切换到“市场视角”或更早年份，不会用人口指标代替。";
+ comp.replaceChildren();
+ const keys=LENSES[lens].keys;
+ const jp=top?.comparison;
+ for(const k of keys){
+  const row=document.createElement("div");row.className="metric-row";
+  const label=document.createElement("div");label.className="metric-name";label.textContent=WEIGHTS[k].label;
+  const value=document.createElement("div");value.className="metric-pair";
+  const lhs=document.createElement("span"),rhs=document.createElement("span");
+  lhs.innerHTML=`<small>中国 ${y}</small><b>${fmt(cn.values[k])}</b>`;
+  rhs.innerHTML=`<small>日本 ${top?.year??"—"}</small><b>${jp?fmt(jp.values[k]):"—"}</b>`;
+  value.append(lhs,rhs);row.append(label,value);comp.append(row);
+ }
+ const streak=monthStreak(state.data,"stock","CHN",y,month);
+ $("trend").textContent=streak?`股票月度连续${streak.direction} ${streak.months} 个月（截至 ${streak.period}）`:"股票月度趋势暂无连续观测";
+ $("caveat").textContent="匹配衡量指标差异，不等于制度、人口结构、债务结构或政策传导相似；历史相似不代表未来会重复。";
+ const items=result.ranked.slice(1,4);
+ $("alternatives").textContent=items.length?`其他候选：${items.map(x=>x.year+" 年").join("、")}`:"";
+}
+async function refresh() {
+ if(state.loading)return;state.loading=true;
+ $("run").disabled=true;$("run").textContent="读取中日公开数据…";
+ const settled=await Promise.allSettled(metricIds.map(async id=>{
+  const response=await fetch("/api/indicators?id="+encodeURIComponent(id),{cache:"no-store"});
+  if(!response.ok)throw Error("HTTP "+response.status);
+  const data=await response.json();
+  if(!Array.isArray(data.data))throw Error("Unexpected source format");
+  state.data[id]=data;delete state.error[id];
+ }));
+ settled.forEach((r,i)=>{if(r.status==="rejected")state.error[metricIds[i]]=String(r.reason)});
+ try{localStorage.setItem("vs-japan-cache",JSON.stringify({date:new Date().toISOString(),data:state.data}));}catch{}
+ state.loading=false;$("run").disabled=false;$("run").textContent="重新获取最新数据";
+ updateStatus();render();
+ const count=Object.keys(state.error).length;
+ $("loadStatus").textContent=count?`${count} 组数据源获取失败；保留其他已获取数据。请稍后重试。`:"本次请求完成。历史数据可能滞后于实时行情。";
+}
+function init(){
+ for(let y=2026;y>=1990;y--){
+  const opt=document.createElement("option");opt.value=String(y);opt.textContent=y+" 年";$("year").append(opt);
+ }
+ $("year").value="2025";$("month").value="12";
+ for(const id of ["year","month","lens"])$(id).addEventListener("change",render);
+ $("run").addEventListener("click",refresh);
+ $("ask").addEventListener("click",()=>{
+  const r=state.latest,y=$("year").value,m=$("month").value;
+  const details=LENSES[$("lens").value].keys.map(k=>WEIGHTS[k].label+"："+fmt(r?.china?.values[k])).join("；");
+  const msg=`请作为经济史研究助手，以原始统计来源解释中国${y}年${m}月与日本历史阶段的联系和区别。当前观察：${details}。候选年份：${r?.ranked?.[0]?.year??"数据不足"}。请核对最新数据，分析股市收益趋势、人民币/日元兑美元变动、利率、货币、就业，以及制度口径差异，列出正反证据，不要把历史匹配当投资建议。`;
+  navigator.clipboard?.writeText(msg).then(()=>{$("ask").textContent="已复制，可到 ChatGPT 粘贴";}).catch(()=>window.prompt("复制问题到 ChatGPT",msg));
+ });
+ try{
+  const saved=JSON.parse(localStorage.getItem("vs-japan-cache")||"null");
+  if(saved?.data&&typeof saved.data==="object"){state.data=saved.data;updateStatus();render();$("loadStatus").textContent="显示本机上次缓存；正在尝试更新。";}
+ }catch{}
+ if("serviceWorker" in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>{});
+ refresh();
+}
+init();
